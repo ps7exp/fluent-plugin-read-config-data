@@ -30,7 +30,7 @@ end
 module Fluent
   module Plugin
     class ReadConfigDataInput < Fluent::Plugin::Input
-      Fluent::Plugin.register_input("config-data", self)
+      Fluent::Plugin.register_input("config-read", self)
 
       helpers :timer, :event_loop, :parser, :compat_parameters
 
