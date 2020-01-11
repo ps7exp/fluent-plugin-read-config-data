@@ -30,7 +30,7 @@ end
 module Fluent
   module Plugin
     class ReadConfigDataInput < Fluent::Plugin::Input
-      Fluent::Plugin.register_input("read_config_data", self)
+      Fluent::Plugin.register_input("config-data", self)
 
       helpers :timer, :event_loop, :parser, :compat_parameters
 
@@ -49,7 +49,7 @@ module Fluent
       def initialize
         super
         @paths = []
-        @tails = {}
+        @read_config_data = {}
         @pf_file = nil
         @pf = nil
         @ignore_list = []
@@ -67,9 +67,6 @@ module Fluent
     config_param :pos_file, :string, default: nil
     desc 'Start to read the logs from the head of file, not bottom.'
     config_param :read_from_head, :bool, default: false
-    # When the program deletes log file and re-creates log file with same filename after passed refresh_interval,
-    # in_tail may raise a pos_file related error. This is a known issue but there is no such program on production.
-    # If we find such program / application, we will fix the problem.
     desc 'The interval of refreshing the list of watch file.'
     config_param :refresh_interval, :time, default: 60
     desc 'The number of reading lines at each IO.'
@@ -140,12 +137,12 @@ module Fluent
       if @pos_file
         if @variable_store.key?(@pos_file) && !called_in_test?
           plugin_id_using_this_path = @variable_store[@pos_file]
-          raise Fluent::ConfigError, "Other 'in_tail' plugin already use same pos_file path: plugin_id = #{plugin_id_using_this_path}, pos_file path = #{@pos_file}"
+          raise Fluent::ConfigError, "Other 'in_config_read_data' plugin already use same pos_file path: plugin_id = #{plugin_id_using_this_path}, pos_file path = #{@pos_file}"
         end
         @variable_store[@pos_file] = self.plugin_id
       else
-        $log.warn "'pos_file PATH' parameter is not set to a 'tail' source."
-        $log.warn "this parameter is highly recommended to save the position to resume tailing."
+        $log.warn "'pos_file PATH' parameter is not set to a 'config_read_data' source."
+        $log.warn "this parameter is highly recommended to save the position to resume confing."
       end
 
       configure_tag
@@ -176,7 +173,7 @@ module Fluent
     def configure_encoding
       unless @encoding
         if @from_encoding
-          raise Fluent::ConfigError, "tail: 'from_encoding' parameter must be specified with 'encoding' parameter."
+          raise Fluent::ConfigError, "config_read_data: 'from_encoding' parameter must be specified with 'encoding' parameter."
         end
       end
 
@@ -220,7 +217,7 @@ module Fluent
 
     def shutdown
       # during shutdown phase, don't close io. It should be done in close after all threads are stopped. See close.
-      stop_watchers(@tails.keys, immediate: true, remove_watcher: false)
+      stop_watchers(@read_config_data.keys, immediate: true, remove_watcher: false)
       @pf_file.close if @pf_file
 
       super
@@ -288,9 +285,9 @@ module Fluent
     # e.g. path /path/to/dir/*,/path/to/rotated_logs/target_file
     def refresh_watchers
       target_paths = expand_paths
-      existence_paths = @tails.keys
+      existence_paths = @read_config_data.keys
 
-      log.debug { "tailing paths: target = #{target_paths.join(",")} | existing = #{existence_paths.join(",")}" }
+      log.debug { "config paths: target = #{target_paths.join(",")} | existing = #{existence_paths.join(",")}" }
 
       unwatched = existence_paths - target_paths
       added = target_paths - existence_paths
@@ -327,7 +324,7 @@ module Fluent
             begin
               pe.update(Fluent::FileWrapper.stat(path).ino, 0)
             rescue Errno::ENOENT
-              $log.warn "#{path} not found. Continuing without tailing it."
+              $log.warn "#{path} not found. Continuing without config reding it."
             end
           end
         end
@@ -338,13 +335,13 @@ module Fluent
           log.warn "Skip #{path} because unexpected setup error happens: #{e}"
           next
         end
-        @tails[path] = tw
+        @read_config_data[path] = tw
       }
     end
 
     def stop_watchers(paths, immediate: false, unwatched: false, remove_watcher: true)
       paths.each { |path|
-        tw = remove_watcher ? @tails.delete(path) : @tails[path]
+        tw = remove_watcher ? @read_config_data.delete(path) : @read_config_data[path]
         if tw
           tw.unwatched = unwatched
           if immediate
@@ -357,15 +354,15 @@ module Fluent
     end
 
     def close_watcher_handles
-      @tails.keys.each do |path|
-        tw = @tails.delete(path)
+      @read_config_data.keys.each do |path|
+        tw = @read_config_data.delete(path)
         if tw
           tw.close
         end
       end
     end
 
-    # refresh_watchers calls @tails.keys so we don't use stop_watcher -> start_watcher sequence for safety.
+    # refresh_watchers calls @read_config_data.keys so we don't use stop_watcher -> start_watcher sequence for safety.
     def update_watcher(path, pe)
       if @pf
         unless pe.read_inode == @pf[path].read_inode
@@ -373,8 +370,8 @@ module Fluent
           return
         end
       end
-      rotated_tw = @tails[path]
-      @tails[path] = setup_watcher(path, pe)
+      rotated_tw = @read_config_data[path]
+      @read_config_data[path] = setup_watcher(path, pe)
       detach_watcher_after_rotate_wait(rotated_tw) if rotated_tw
     end
 
