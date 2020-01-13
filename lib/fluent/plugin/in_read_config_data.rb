@@ -55,7 +55,7 @@ module Fluent
         @ignore_list = []
       end
 
-      desc 'The paths to read. Multiple paths can be specified, separated by comma.'
+    desc 'The paths to read. Multiple paths can be specified, separated by comma.'
     config_param :path, :string
     desc 'The tag of the event.'
     config_param :tag, :string
@@ -83,7 +83,7 @@ module Fluent
     config_param :encoding, :string, default: nil
     desc 'The encoding of the input.'
     config_param :from_encoding, :string, default: nil
-    desc 'Add the log path being tailed to records. Specify the field name to be used.'
+    desc 'Add the log path being config to records. Specify the field name to be used.'
     config_param :path_key, :string, default: nil
     desc 'Open and close the file on every update instead of leaving it open until it gets rotated.'
     config_param :open_on_every_update, :bool, default: false
@@ -125,7 +125,7 @@ module Fluent
 
       @paths = @path.split(',').map {|path| path.strip }
       if @paths.empty?
-        raise Fluent::ConfigError, "tail: 'path' parameter is required on tail input"
+        raise Fluent::ConfigError, "config_read: 'path' parameter is required on config_read input"
       end
       if @path_timezone
         Fluent::Timezone.validate!(@path_timezone)
@@ -278,11 +278,7 @@ module Fluent
       paths - excluded
     end
 
-    # in_tail with '*' path doesn't check rotation file equality at refresh phase.
-    # So you should not use '*' path when your logs will be rotated by another tool.
-    # It will cause log duplication after updated watch files.
-    # In such case, you should separate log directory and specify two paths in path parameter.
-    # e.g. path /path/to/dir/*,/path/to/rotated_logs/target_file
+   
     def refresh_watchers
       target_paths = expand_paths
       existence_paths = @read_config_data.keys
@@ -375,10 +371,6 @@ module Fluent
       detach_watcher_after_rotate_wait(rotated_tw) if rotated_tw
     end
 
-    # TailWatcher#close is called by another thread at shutdown phase.
-    # It causes 'can't modify string; temporarily locked' error in IOHandler
-    # so adding close_io argument to avoid this problem.
-    # At shutdown, IOHandler's io will be released automatically after detached the event loop
     def detach_watcher(tw, close_io = true)
       tw.detach { |watcher|
         event_loop_detach(watcher.timer_trigger) if watcher.timer_trigger
@@ -419,11 +411,11 @@ module Fluent
     end
 
     # @return true if no error or unrecoverable error happens in emit action. false if got BufferOverflowError
-    def receive_lines(lines, tail_watcher)
-      es = @receive_handler.call(lines, tail_watcher)
+    def receive_lines(lines, watcher)
+      es = @receive_handler.call(lines, watcher)
       unless es.empty?
         tag = if @tag_prefix || @tag_suffix
-                @tag_prefix + tail_watcher.tag + @tag_suffix
+                @tag_prefix + watcher.tag + @tag_suffix
               else
                 @tag
               end
@@ -432,7 +424,7 @@ module Fluent
         rescue Fluent::Plugin::Buffer::BufferOverflowError
           return false
         rescue
-          # ignore non BufferQueueLimitError errors because in_tail can't recover. Engine shows logs and backtraces.
+          # ignore non BufferQueueLimitError errors because config can't recover. Engine shows logs and backtraces.
           return true
         end
       end
@@ -440,53 +432,53 @@ module Fluent
       return true
     end
 
-    def convert_line_to_event(line, es, tail_watcher)
+    def convert_line_to_event(line, es, watcher)
       begin
         line.chomp!  # remove \n
         @parser.parse(line) { |time, record|
           if time && record
-            record[@path_key] ||= tail_watcher.path unless @path_key.nil?
+            record[@path_key] ||= watcher.path unless @path_key.nil?
             es.add(time, record)
           else
             if @emit_unmatched_lines
               record = {'unmatched_line' => line}
-              record[@path_key] ||= tail_watcher.path unless @path_key.nil?
+              record[@path_key] ||= watcher.path unless @path_key.nil?
               es.add(Fluent::EventTime.now, record)
             end
             log.warn "pattern not matched: #{line.inspect}"
           end
         }
       rescue => e
-        log.warn 'invalid line found', file: tail_watcher.path, line: line, error: e.to_s
+        log.warn 'invalid line found', file: watcher.path, line: line, error: e.to_s
         log.debug_backtrace(e.backtrace)
       end
     end
 
-    def parse_singleline(lines, tail_watcher)
+    def parse_singleline(lines, watcher)
       es = Fluent::MultiEventStream.new
       lines.each { |line|
-        convert_line_to_event(line, es, tail_watcher)
+        convert_line_to_event(line, es, watcher)
       }
       es
     end
 
-    def parse_multilines(lines, tail_watcher)
-      lb = tail_watcher.line_buffer
+    def parse_multilines(lines, watcher)
+      lb = watcher.line_buffer
       es = Fluent::MultiEventStream.new
       if @parser.has_firstline?
-        tail_watcher.line_buffer_timer_flusher.reset_timer if tail_watcher.line_buffer_timer_flusher
+        watcher.line_buffer_timer_flusher.reset_timer if watcher.line_buffer_timer_flusher
         lines.each { |line|
           if @parser.firstline?(line)
             if lb
-              convert_line_to_event(lb, es, tail_watcher)
+              convert_line_to_event(lb, es, watcher)
             end
             lb = line
           else
             if lb.nil?
               if @emit_unmatched_lines
-                convert_line_to_event(line, es, tail_watcher)
+                convert_line_to_event(line, es, watcher)
               end
-              log.warn "got incomplete line before first line from #{tail_watcher.path}: #{line.inspect}"
+              log.warn "got incomplete line before first line from #{watcher.path}: #{line.inspect}"
             else
               lb << line
             end
@@ -498,13 +490,13 @@ module Fluent
           lb << line
           @parser.parse(lb) { |time, record|
             if time && record
-              convert_line_to_event(lb, es, tail_watcher)
+              convert_line_to_event(lb, es, watcher)
               lb = ''
             end
           }
         end
       end
-      tail_watcher.line_buffer = lb
+      watcher.line_buffer = lb
       es
     end
 
@@ -621,11 +613,11 @@ module Fluent
             if inode == @pe.read_inode # truncated
               @pe.update_pos(0)
               @io_handler.close
-            elsif !@io_handler.opened? # There is no previous file. Reuse TailWatcher
+            elsif !@io_handler.opened? # There is no previous file. Reuse Watcher
               @pe.update(inode, 0)
             else # file is rotated and new file found
               watcher_needs_update = true
-              # Handle the old log file before renewing TailWatcher [fluentd#1055]
+              # Handle the old log file before renewing Watcher [fluentd#1055]
               @io_handler.on_notify
             end
           else # file is rotated and new file not found
@@ -651,7 +643,7 @@ module Fluent
         mpe = MemoryPositionEntry.new
         mpe.update(pe.read_inode, pe.read_pos)
         @pe = mpe
-        pe # This pe will be updated in on_rotate after TailWatcher is initialized
+        pe # This pe will be updated in on_rotate after Watcher is initialized
       end
 
       class TimerTrigger < Coolio::TimerWatcher
@@ -752,7 +744,7 @@ module Fluent
           @lines = []
           @io = nil
           @notify_mutex = Mutex.new
-          @watcher.log.info "following tail of #{@watcher.path}"
+          @watcher.log.info "following config of #{@watcher.path}"
         end
 
         def on_notify
